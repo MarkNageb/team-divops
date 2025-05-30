@@ -1,0 +1,392 @@
+---
+- name: Setup All Servers - Common Configuration
+  hosts: all
+  become: yes
+  tasks:
+    - name: Update system packages
+      yum:
+        name: "*"
+        state: latest
+        update_cache: yes
+
+    - name: Install common packages
+      yum:
+        name:
+          - git
+          - curl
+          - wget
+          - htop
+          - vim
+          - unzip
+        state: present
+
+    - name: Create application user
+      user:
+        name: appuser
+        shell: /bin/bash
+        create_home: yes
+
+- name: Setup Frontend Server (React)
+  hosts: frontend
+  become: yes
+  tasks:
+    - name: Install Node.js repository
+      shell: curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
+
+    - name: Install Node.js and npm
+      yum:
+        name: nodejs
+        state: present
+
+    - name: Install nginx
+      yum:
+        name: nginx
+        state: present
+
+    - name: Start and enable nginx
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Open HTTP ports in firewall
+      firewalld:
+        port: "{{ item }}"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - "80/tcp"
+        - "3000/tcp"
+        - "443/tcp"
+      ignore_errors: yes
+
+    - name: Clone React frontend repository
+      git:
+        repo: https://github.com/your-username/team-divops.git
+        dest: /home/appuser/frontend
+        force: yes
+      become_user: appuser
+
+    - name: Install React dependencies
+      npm:
+        path: /home/appuser/frontend/frontend
+        state: present
+      become_user: appuser
+
+    - name: Build React application
+      shell: |
+        cd /home/appuser/frontend/frontend
+        npm run build
+      become_user: appuser
+
+    - name: Configure nginx for React
+      copy:
+        content: |
+          server {
+              listen 80;
+              server_name _;
+              root /home/appuser/frontend/frontend/build;
+              index index.html;
+
+              location / {
+                  try_files $uri $uri/ /index.html;
+              }
+
+              location /api/ {
+                  proxy_pass http://backend:8080/;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+
+              location /genai/ {
+                  proxy_pass http://genai:8000/;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+          }
+        dest: /etc/nginx/conf.d/frontend.conf
+
+    - name: Restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+
+- name: Setup Backend Server (Java Spring Boot)
+  hosts: backend
+  become: yes
+  tasks:
+    - name: Install Java 17
+      yum:
+        name: java-17-amazon-corretto-devel
+        state: present
+
+    - name: Install Maven
+      yum:
+        name: maven
+        state: present
+
+    - name: Open API ports in firewall
+      firewalld:
+        port: "{{ item }}"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - "8080/tcp"
+        - "8443/tcp"
+      ignore_errors: yes
+
+    - name: Clone Java backend repository
+      git:
+        repo: https://github.com/your-username/team-divops.git
+        dest: /home/appuser/backend
+        force: yes
+      become_user: appuser
+
+    - name: Build Java application
+      shell: |
+        cd /home/appuser/backend/backend
+        mvn clean package -DskipTests
+      become_user: appuser
+      environment:
+        JAVA_HOME: /usr/lib/jvm/java-17-amazon-corretto
+
+    - name: Create application properties
+      copy:
+        content: |
+          server.port=8080
+          spring.application.name=backend-api
+          # Database configuration (if needed)
+          # spring.datasource.url=jdbc:mysql://localhost:3306/divops
+          # spring.datasource.username=root
+          # spring.datasource.password=password
+          
+          # GenAI service URL
+          genai.service.url=http://genai:8000
+          
+          # CORS configuration
+          cors.allowed.origins=http://frontend,http://localhost:3000
+        dest: /home/appuser/backend/backend/src/main/resources/application.properties
+        owner: appuser
+        group: appuser
+
+    - name: Create systemd service for Java backend
+      copy:
+        content: |
+          [Unit]
+          Description=Java Backend API
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=appuser
+          WorkingDirectory=/home/appuser/backend/backend
+          ExecStart=/usr/bin/java -jar target/*.jar
+          Restart=always
+          Environment=JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/backend-api.service
+
+    - name: Enable and start backend service
+      systemd:
+        name: backend-api
+        daemon_reload: yes
+        enabled: yes
+        state: started
+
+- name: Setup GenAI Server (Python + Gemini)
+  hosts: genai
+  become: yes
+  tasks:
+    - name: Install Python and pip
+      yum:
+        name:
+          - python3
+          - python3-pip
+          - python3-devel
+        state: present
+
+    - name: Install Docker repository
+      shell: |
+        yum install -y yum-utils
+        yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+
+    - name: Install Docker
+      yum:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+
+    - name: Start and enable Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add users to docker group
+      user:
+        name: "{{ item }}"
+        groups: docker
+        append: yes
+      loop:
+        - ec2-user
+        - appuser
+
+    - name: Install GenAI Python dependencies
+      pip:
+        name:
+          - fastapi
+          - uvicorn
+          - gunicorn
+          - pydantic
+          - python-dotenv
+          - weaviate-client
+          - google-generativeai
+          - httpx
+          - python-multipart
+        executable: pip3
+
+    - name: Open GenAI ports in firewall
+      firewalld:
+        port: "{{ item }}"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - "8000/tcp"
+        - "8080/tcp"
+      ignore_errors: yes
+
+    - name: Clone GenAI repository
+      git:
+        repo: https://github.com/your-username/team-divops.git
+        dest: /home/appuser/genai
+        force: yes
+      become_user: appuser
+
+    - name: Create environment file for GenAI
+      copy:
+        content: |
+          GEMINI_API_KEY=your_actual_gemini_api_key_here
+          WEAVIATE_URL=http://localhost:8080
+          WEAVIATE_API_KEY=your_weaviate_key_here
+          PYTHONPATH=/home/appuser/genai/genai
+        dest: /home/appuser/genai/genai/.env
+        owner: appuser
+        group: appuser
+
+    - name: Install Python requirements
+      pip:
+        requirements: /home/appuser/genai/genai/requirements.txt
+        executable: pip3
+      become_user: appuser
+      ignore_errors: yes
+
+    - name: Create systemd service for GenAI API
+      copy:
+        content: |
+          [Unit]
+          Description=GenAI Tarot API
+          After=network.target docker.service
+          Requires=docker.service
+
+          [Service]
+          Type=simple
+          User=appuser
+          WorkingDirectory=/home/appuser/genai/genai
+          ExecStart=/usr/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+          Restart=always
+          Environment=PATH=/usr/local/bin:/usr/bin:/bin
+          EnvironmentFile=/home/appuser/genai/genai/.env
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/genai-api.service
+
+    - name: Start Weaviate with Docker
+      shell: |
+        cd /home/appuser/genai/genai
+        docker run -d \
+          --name weaviate \
+          -p 8080:8080 \
+          -e QUERY_DEFAULTS_LIMIT=25 \
+          -e AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true \
+          -e PERSISTENCE_DATA_PATH='/var/lib/weaviate' \
+          -e DEFAULT_VECTORIZER_MODULE='none' \
+          -e ENABLE_MODULES='text2vec-openai,text2vec-cohere,text2vec-huggingface,ref2vec-centroid,generative-openai,qna-openai' \
+          -e CLUSTER_HOSTNAME='node1' \
+          semitechnologies/weaviate:1.21.3
+      become_user: appuser
+      ignore_errors: yes
+
+    - name: Enable GenAI service
+      systemd:
+        name: genai-api
+        daemon_reload: yes
+        enabled: yes
+
+- name: Configure Inter-Service Communication
+  hosts: all
+  become: yes
+  tasks:
+    - name: Update /etc/hosts for service discovery
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ hostvars[item]['ansible_default_ipv4']['address'] }} {{ item }}"
+        state: present
+      loop:
+        - frontend
+        - backend
+        - genai
+
+- name: Final Configuration and Health Checks
+  hosts: all
+  become: yes
+  tasks:
+    - name: Restart firewalld
+      systemd:
+        name: firewalld
+        state: restarted
+      ignore_errors: yes
+
+    - name: Display server information
+      debug:
+        msg: |
+          Server: {{ inventory_hostname }}
+          IP: {{ ansible_default_ipv4.address }}
+          Role: {{ group_names[0] }}
+          Services: 
+          {% if 'frontend' in group_names %}
+          - React App on port 80/3000
+          - Nginx reverse proxy
+          {% elif 'backend' in group_names %}
+          - Java Spring Boot API on port 8080
+          {% elif 'genai' in group_names %}
+          - Python FastAPI on port 8000
+          - Weaviate on port 8080
+          {% endif %}
+
+- name: Post-deployment tasks
+  hosts: genai
+  become: yes
+  tasks:
+    - name: Wait for Weaviate to be ready
+      uri:
+        url: http://localhost:8080/v1/meta
+        method: GET
+      register: weaviate_check
+      until: weaviate_check.status == 200
+      retries: 30
+      delay: 10
+      ignore_errors: yes
+
+    - name: Start GenAI service after Weaviate is ready
+      systemd:
+        name: genai-api
+        state: started
+      when: weaviate_check.status == 200
