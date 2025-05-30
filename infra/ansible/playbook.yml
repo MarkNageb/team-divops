@@ -131,28 +131,11 @@
   become: yes
   vars:
     ansible_become_pass: divops  
-    gemini_api_key: "AIzaSyD8j8R3Z1QAnSF6uXQehq5vC2mY2icQ0z4"
-    gemini_api_url: "https://gemini.googleapis.com/v1"
-    weaviate_url: "7hekrcfptr667dosmdjq.c0.europe-west3.gcp.weaviate.cloud"
-    weaviate_api_key: "9iTIWdsgJQK2cssqP5hmQWjzuM4XoSrcjIIM"
   tasks:
     - name: Check repository structure
       shell: ls -la /home/appuser/team-divops/
       register: repo_structure
       become_user: appuser
-
-    - name: Display repository structure
-      debug:
-        var: repo_structure.stdout_lines
-
-    - name: Check vector-db directory structure
-      shell: ls -la /home/appuser/team-divops/vector-db/
-      register: vector_db_structure
-      become_user: appuser
-
-    - name: Display vector-db directory structure
-      debug:
-        var: vector_db_structure.stdout_lines
 
     - name: Check if vector-db docker-compose.yml exists
       stat:
@@ -162,17 +145,6 @@
     - name: Display vector-db compose status
       debug:
         msg: "Vector DB docker-compose.yml exists: {{ vector_db_compose_exists.stat.exists }}"
-
-    - name: Show vector-db docker-compose content
-      shell: cat /home/appuser/team-divops/vector-db/docker-compose.yml
-      register: vector_db_compose_content
-      become_user: appuser
-      when: vector_db_compose_exists.stat.exists
-
-    - name: Display vector-db compose content
-      debug:
-        var: vector_db_compose_content.stdout_lines
-      when: vector_db_compose_exists.stat.exists
 
     - name: Stop any existing vector-db containers
       shell: |
@@ -197,7 +169,7 @@
 
     - name: Wait for Vector Database to be ready
       pause:
-        seconds: 30
+        seconds: 8
         prompt: "Waiting for Vector Database to initialize..."
       when: vector_db_compose_exists.stat.exists
 
@@ -219,8 +191,8 @@
         url: "{{ item }}"
         method: GET
       loop:
-        - "http://localhost:8080/v1/meta"  # Weaviate health check
-        - "http://localhost:8080/v1/schema"  # Weaviate schema
+        - "http://localhost:8888/v1/meta"  
+        - "http://localhost:8888/v1/schema" 
       register: vector_db_health
       ignore_errors: yes
       when: vector_db_compose_exists.stat.exists
@@ -237,29 +209,10 @@
     - name: Create environment file for genai
       copy:
         content: |
-          GEMINI_API_KEY={{ gemini_api_key }}
-          GEMINI_API_URL={{ gemini_api_url }}
-          WEAVIATE_URL={{ weaviate_url }}
-          WEAVIATE_API_KEY={{ weaviate_api_key }}
           PYTHONPATH=/app
-          # Local Vector DB (if using local instance)
-          LOCAL_WEAVIATE_URL=http://localhost:8080
+          # Local Vector DB 
+          LOCAL_WEAVIATE_URL=http://localhost:8888
         dest: /home/appuser/team-divops/genai/.env
-        owner: appuser
-        group: appuser
-        mode: '0600'
-
-    - name: Create environment file for app subdirectory
-      copy:
-        content: |
-          GEMINI_API_KEY={{ gemini_api_key }}
-          GEMINI_API_URL={{ gemini_api_url }}
-          WEAVIATE_URL={{ weaviate_url }}
-          WEAVIATE_API_KEY={{ weaviate_api_key }}
-          PYTHONPATH=/app
-          # Local Vector DB (if using local instance)
-          LOCAL_WEAVIATE_URL=http://localhost:8080
-        dest: /home/appuser/team-divops/genai/app/.env
         owner: appuser
         group: appuser
         mode: '0600'
@@ -268,23 +221,6 @@
       stat:
         path: /home/appuser/team-divops/genai/requirements.txt
       register: requirements_exists
-
-    - name: Install Python dependencies from existing requirements
-      shell: |
-        cd /home/appuser/team-divops/genai
-        if [ -f requirements.txt ]; then
-          echo "Installing from existing requirements.txt:"
-          cat requirements.txt
-          pip3 install -r requirements.txt
-        else
-          echo "No requirements.txt found"
-        fi
-      become_user: appuser
-      register: pip_install_output
-
-    - name: Display pip installation output
-      debug:
-        var: pip_install_output.stdout_lines
 
 - name: Deploy GenAI Services
   hosts: genai
@@ -337,7 +273,7 @@
 
     - name: Wait for GenAI container to start
       pause:
-        seconds: 15
+        seconds: 8
 
     - name: Check GenAI container logs
       shell: docker logs genai-container
@@ -396,7 +332,7 @@
           - Health: http://{{ ansible_default_ipv4.address }}:8000/health
           
           Vector Database:
-          - Local Weaviate: http://{{ ansible_default_ipv4.address }}:8080/v1/meta
+          - Local Weaviate: http://{{ ansible_default_ipv4.address }}:8888/v1/meta
           ==========================================
 
     - name: Show all running containers
