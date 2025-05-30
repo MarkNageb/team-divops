@@ -2,15 +2,30 @@
 - name: Setup All Servers 
   hosts: all
   become: yes
+  vars:
+    ansible_become_pass: divops
   tasks:
-    - name: Update system packages
-      yum:
-        name: "*"
-        state: latest
-        update_cache: yes
+    - name: Check OS version
+      command: cat /etc/os-release
+      register: os_info
 
-    - name: Install common packages
-      yum:
+    - name: Display OS information
+      debug:
+        var: os_info.stdout_lines
+
+    - name: Update package cache (Ubuntu)
+      apt:
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+
+    - name: Update system packages (Amazon Linux)
+      shell: yum update -y --skip-broken
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
+
+    - name: Install common packages (Ubuntu)
+      apt:
         name:
           - git
           - curl
@@ -18,20 +33,21 @@
           - htop
           - vim
           - unzip
+          - docker.io
+          - docker-compose
         state: present
+      when: ansible_os_family == "Debian"
 
-    - name: Install Docker repository
+    - name: Install common packages (Amazon Linux)
       shell: |
-        yum install -y yum-utils
-        yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+        yum install -y git curl wget htop vim unzip yum-utils
+      when: ansible_os_family == "RedHat"
 
-    - name: Install Docker
-      yum:
-        name:
-          - docker-ce
-          - docker-ce-cli
-          - containerd.io
-        state: present
+    - name: Install Docker (Amazon Linux)
+      shell: |
+        amazon-linux-extras install docker -y
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
 
     - name: Start and enable Docker
       systemd:
@@ -39,277 +55,355 @@
         state: started
         enabled: yes
 
-    - name: Install Docker Compose
+    - name: Install Docker Compose (if not present)
       shell: |
-        curl -L "https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-        chmod +x /usr/local/bin/docker-compose
+        if ! command -v docker-compose &> /dev/null; then
+          curl -L "https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          chmod +x /usr/local/bin/docker-compose
+          ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
+        fi
+      ignore_errors: yes
 
-    - name: Create docker-compose symlink
-      file:
-        src: /usr/local/bin/docker-compose
-        dest: /usr/bin/docker-compose
-        state: link
-
-    - name: Create application user
+    - name: Create application user (if not exists)
       user:
         name: appuser
         shell: /bin/bash
         create_home: yes
         groups: docker
         append: yes
+      ignore_errors: yes
 
-    - name: Add ec2-user to docker group
+    - name: Add existing users to docker group
       user:
-        name: ec2-user
+        name: "{{ item }}"
         groups: docker
         append: yes
+      loop:
+        - ec2-user
+        - ubuntu
+        - appuser
+      ignore_errors: yes
 
-- name: Setup Frontend Server (React)
-  hosts: frontend
+    - name: Test Docker installation
+      shell: docker --version
+      register: docker_version
+
+    - name: Display Docker version
+      debug:
+        msg: "Docker: {{ docker_version.stdout }}"
+
+- name: Setup All Services Repository
+  hosts: all
   become: yes
+  vars:
+    ansible_become_pass: divops
   tasks:
-    - name: Clone React frontend repository
+    - name: Clone repository
       git:
-        repo: git@github.com:AET-DevOps25/team-divops.git
+        repo: https://github.com/AET-DevOps25/team-divops.git
         dest: /home/appuser/team-divops
         force: yes
       become_user: appuser
 
-    - name: Open HTTP ports in firewall
-      firewalld:
-        port: "{{ item }}"
-        permanent: yes
-        state: enabled
-        immediate: yes
+    - name: Create necessary directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: appuser
+        group: appuser
+        mode: '0755'
       loop:
-        - "80/tcp"
-        - "3000/tcp"
-        - "443/tcp"
-      ignore_errors: yes
+        - /home/appuser/team-divops/vector-db
+        - /home/appuser/team-divops/genai
+        - /home/appuser/team-divops/genai/app
+        - /home/appuser/team-divops/frontend
+        - /home/appuser/team-divops/backend
 
-- name: Setup Backend Server (Java Spring Boot)
-  hosts: backend
-  become: yes
-  tasks:
-    - name: Clone Java backend repository
-      git:
-        repo: git@github.com:AET-DevOps25/team-divops.git
-        dest: /home/appuser/team-divops
-        force: yes
-      become_user: appuser
-
-    - name: Open API ports in firewall
-      firewalld:
-        port: "{{ item }}"
-        permanent: yes
-        state: enabled
-        immediate: yes
-      loop:
-        - "8080/tcp"
-      ignore_errors: yes
+    - name: Set ownership for team-divops directory
+      file:
+        path: /home/appuser/team-divops
+        owner: appuser
+        group: appuser
+        recurse: yes
 
 - name: Setup GenAI Server (Python + Gemini + Weaviate)
   hosts: genai
   become: yes
-  vars_files:
-    - secrets.yml 
+  vars:
+    ansible_become_pass: divops  
+    gemini_api_key: "AIzaSyD8j8R3Z1QAnSF6uXQehq5vC2mY2icQ0z4"
+    gemini_api_url: "https://gemini.googleapis.com/v1"
+    weaviate_url: "7hekrcfptr667dosmdjq.c0.europe-west3.gcp.weaviate.cloud"
+    weaviate_api_key: "9iTIWdsgJQK2cssqP5hmQWjzuM4XoSrcjIIM"
   tasks:
-    - name: Clone GenAI repository
-      git:
-        repo: git@github.com:AET-DevOps25/team-divops.git
-        dest: /home/appuser/team-divops
-        force: yes
+    - name: Check repository structure
+      shell: ls -la /home/appuser/team-divops/
+      register: repo_structure
       become_user: appuser
 
-    - name: Create environment file for GenAI
+    - name: Display repository structure
+      debug:
+        var: repo_structure.stdout_lines
+
+    - name: Check vector-db directory structure
+      shell: ls -la /home/appuser/team-divops/vector-db/
+      register: vector_db_structure
+      become_user: appuser
+
+    - name: Display vector-db directory structure
+      debug:
+        var: vector_db_structure.stdout_lines
+
+    - name: Check if vector-db docker-compose.yml exists
+      stat:
+        path: /home/appuser/team-divops/vector-db/docker-compose.yml
+      register: vector_db_compose_exists
+
+    - name: Display vector-db compose status
+      debug:
+        msg: "Vector DB docker-compose.yml exists: {{ vector_db_compose_exists.stat.exists }}"
+
+    - name: Show vector-db docker-compose content
+      shell: cat /home/appuser/team-divops/vector-db/docker-compose.yml
+      register: vector_db_compose_content
+      become_user: appuser
+      when: vector_db_compose_exists.stat.exists
+
+    - name: Display vector-db compose content
+      debug:
+        var: vector_db_compose_content.stdout_lines
+      when: vector_db_compose_exists.stat.exists
+
+    - name: Stop any existing vector-db containers
+      shell: |
+        cd /home/appuser/team-divops/vector-db
+        docker-compose down || true
+      become_user: appuser
+      when: vector_db_compose_exists.stat.exists
+      ignore_errors: yes
+
+    - name: Initialize Vector Database (Weaviate)
+      shell: |
+        cd /home/appuser/team-divops/vector-db
+        docker-compose up -d
+      register: vector_db_init
+      become_user: appuser
+      when: vector_db_compose_exists.stat.exists
+
+    - name: Display vector-db initialization output
+      debug:
+        var: vector_db_init.stdout_lines
+      when: vector_db_compose_exists.stat.exists
+
+    - name: Wait for Vector Database to be ready
+      pause:
+        seconds: 30
+        prompt: "Waiting for Vector Database to initialize..."
+      when: vector_db_compose_exists.stat.exists
+
+    - name: Check vector-db containers status
+      shell: |
+        cd /home/appuser/team-divops/vector-db
+        docker-compose ps
+      register: vector_db_status
+      become_user: appuser
+      when: vector_db_compose_exists.stat.exists
+
+    - name: Display vector-db containers status
+      debug:
+        var: vector_db_status.stdout_lines
+      when: vector_db_compose_exists.stat.exists
+
+    - name: Test vector database connectivity (if applicable)
+      uri:
+        url: "{{ item }}"
+        method: GET
+      loop:
+        - "http://localhost:8080/v1/meta"  # Weaviate health check
+        - "http://localhost:8080/v1/schema"  # Weaviate schema
+      register: vector_db_health
+      ignore_errors: yes
+      when: vector_db_compose_exists.stat.exists
+
+    - name: Display vector database health check
+      debug:
+        msg: |
+          Vector Database Health Check:
+          {% for result in vector_db_health.results %}
+          - {{ result.item }}: {{ 'OK' if result.status == 200 else 'Failed' }}
+          {% endfor %}
+      when: vector_db_compose_exists.stat.exists and vector_db_health is defined
+
+    - name: Create environment file for genai
       copy:
         content: |
-          GEMINI_API_KEY={{ gemini_api_key | default('your_gemini_api_key_here') }}
-          WEAVIATE_URL=http://weaviate:8080
-          WEAVIATE_API_KEY={{ weaviate_api_key | default('') }}
+          GEMINI_API_KEY={{ gemini_api_key }}
+          GEMINI_API_URL={{ gemini_api_url }}
+          WEAVIATE_URL={{ weaviate_url }}
+          WEAVIATE_API_KEY={{ weaviate_api_key }}
           PYTHONPATH=/app
-        dest: /home/appuser/team-divops/vectordb/.env
+          # Local Vector DB (if using local instance)
+          LOCAL_WEAVIATE_URL=http://localhost:8080
+        dest: /home/appuser/team-divops/genai/.env
         owner: appuser
         group: appuser
         mode: '0600'
 
-    - name: Open GenAI ports in firewall
-      firewalld:
-        port: "{{ item }}"
-        permanent: yes
-        state: enabled
-        immediate: yes
-      loop:
-        - "8000/tcp"
-        - "8080/tcp"
-      ignore_errors: yes
+    - name: Create environment file for app subdirectory
+      copy:
+        content: |
+          GEMINI_API_KEY={{ gemini_api_key }}
+          GEMINI_API_URL={{ gemini_api_url }}
+          WEAVIATE_URL={{ weaviate_url }}
+          WEAVIATE_API_KEY={{ weaviate_api_key }}
+          PYTHONPATH=/app
+          # Local Vector DB (if using local instance)
+          LOCAL_WEAVIATE_URL=http://localhost:8080
+        dest: /home/appuser/team-divops/genai/app/.env
+        owner: appuser
+        group: appuser
+        mode: '0600'
+
+    - name: Check if genai requirements.txt exists
+      stat:
+        path: /home/appuser/team-divops/genai/requirements.txt
+      register: requirements_exists
+
+    - name: Install Python dependencies from existing requirements
+      shell: |
+        cd /home/appuser/team-divops/genai
+        if [ -f requirements.txt ]; then
+          echo "Installing from existing requirements.txt:"
+          cat requirements.txt
+          pip3 install -r requirements.txt
+        else
+          echo "No requirements.txt found"
+        fi
+      become_user: appuser
+      register: pip_install_output
+
+    - name: Display pip installation output
+      debug:
+        var: pip_install_output.stdout_lines
 
 - name: Deploy GenAI Services
   hosts: genai
-  become_user: appuser
+  become: yes
+  vars:
+    ansible_become_pass: divops
   tasks:
+    - name: Verify Vector Database is still running
+      shell: |
+        cd /home/appuser/team-divops/vector-db
+        docker-compose ps
+      register: vector_db_verify
+      become_user: appuser
+      ignore_errors: yes
+
+    - name: Display vector-db verification
+      debug:
+        var: vector_db_verify.stdout_lines
+
+    - name: Stop and remove existing GenAI container
+      shell: |
+        docker stop genai-container || true
+        docker rm genai-container || true
+      ignore_errors: yes
+      become_user: appuser
+
     - name: Build GenAI Docker image
       shell: |
         cd /home/appuser/team-divops/genai
         docker build -t genai-app .
       register: genai_build
+      become_user: appuser
 
-    - name: Stop existing GenAI container if running
-      shell: docker stop genai-container || true
-      ignore_errors: yes
+    - name: Display build output
+      debug:
+        var: genai_build.stdout_lines
 
-    - name: Remove existing GenAI container
-      shell: docker rm genai-container || true
-      ignore_errors: yes
-
-    - name: Run GenAI container
+    - name: Run GenAI container (with vector-db network access)
       shell: |
+        cd /home/appuser/team-divops/genai
         docker run -d \
           --name genai-container \
-          --env-file /home/appuser/team-divops/vectordb/.env \
+          --env-file .env \
           -p 8000:8000 \
-          --network bridge \
+          --network host \
+          --restart unless-stopped \
           genai-app
       register: genai_run
+      become_user: appuser
 
-    - name: Deploy Weaviate with docker-compose
-      shell: |
-        cd /home/appuser/team-divops/vectordb
-        docker-compose down weaviate || true
-        docker-compose up -d weaviate
-      register: weaviate_deploy
+    - name: Wait for GenAI container to start
+      pause:
+        seconds: 15
 
-    - name: Wait for Weaviate to be ready
-      uri:
-        url: http://localhost:8080/v1/meta
-        method: GET
-      register: weaviate_check
-      until: weaviate_check.status == 200
-      retries: 30
-      delay: 10
+    - name: Check GenAI container logs
+      shell: docker logs genai-container
+      register: genai_logs
+      become_user: appuser
       ignore_errors: yes
 
-    - name: Wait for GenAI to be ready
+    - name: Display GenAI container logs
+      debug:
+        var: genai_logs.stdout_lines
+
+    - name: Wait for GenAI to be ready (root endpoint)
+      uri:
+        url: http://localhost:8000/
+        method: GET
+      register: genai_check_root
+      until: genai_check_root.status == 200
+      retries: 10
+      delay: 5
+      ignore_errors: yes
+
+    - name: Wait for GenAI health endpoint
       uri:
         url: http://localhost:8000/health
         method: GET
-      register: genai_check
-      until: genai_check.status == 200
-      retries: 20
-      delay: 10
+      register: genai_check_health
+      until: genai_check_health.status == 200
+      retries: 10
+      delay: 5
       ignore_errors: yes
 
-- name: Deploy Backend Services
-  hosts: backend
-  become_user: appuser
-  tasks:
-    - name: Deploy Backend with existing docker-compose
-      shell: |
-        cd /home/appuser/team-divops/backend
-        docker-compose down || true
-        docker-compose up -d --build
-      register: backend_deploy
-
-    - name: Wait for Backend to be ready
+    - name: Test GenAI docs endpoint
       uri:
-        url: http://localhost:8080/health
+        url: http://localhost:8000/docs
         method: GET
-      register: backend_check
-      until: backend_check.status == 200
-      retries: 20
-      delay: 15
+      register: genai_check_docs
       ignore_errors: yes
 
-- name: Deploy Frontend Services
-  hosts: frontend
-  become_user: appuser
-  tasks:
-    - name: Deploy Frontend with existing docker-compose
-      shell: |
-        cd /home/appuser/team-divops/frontend
-        docker-compose down || true
-        docker-compose up -d --build
-      register: frontend_deploy
-
-    - name: Wait for Frontend to be ready
-      uri:
-        url: http://localhost:80
-        method: GET
-      register: frontend_check
-      until: frontend_check.status == 200
-      retries: 15
-      delay: 10
-      ignore_errors: yes
-
-- name: Configure Inter-Service Communication
-  hosts: all
-  become: yes
-  tasks:
-    - name: Update /etc/hosts for service discovery
-      lineinfile:
-        path: /etc/hosts
-        line: "{{ hostvars[item]['ansible_default_ipv4']['address'] }} {{ item }}"
-        state: present
-      loop:
-        - frontend
-        - backend
-        - genai
-
-- name: Final Health Checks and Information
-  hosts: all
-  become: yes
-  tasks:
-    - name: Restart firewalld
-      systemd:
-        name: firewalld
-        state: restarted
-      ignore_errors: yes
-
-    - name: Display deployment status
+    - name: Display GenAI service status
       debug:
         msg: |
           ==========================================
-          Server: {{ inventory_hostname }}
-          IP: {{ ansible_default_ipv4.address }}
-          Role: {{ group_names[0] }}
+          GenAI Service Deployment Status:
           
-          Services Status:
-          {% if 'frontend' in group_names %}
-          - React App: http://{{ ansible_default_ipv4.address }}
-          - React Dev: http://{{ ansible_default_ipv4.address }}:3000
-          {% elif 'backend' in group_names %}
-          - Java Spring Boot API: http://{{ ansible_default_ipv4.address }}:8080
-          {% elif 'genai' in group_names %}
-          - Python FastAPI: http://{{ ansible_default_ipv4.address }}:8000
-          - Weaviate DB: http://{{ ansible_default_ipv4.address }}:8080
-          {% endif %}
+          Vector Database: {{ 'Running' if vector_db_verify.rc == 0 else 'Not Running' }}
+          GenAI Container: {{ 'Running' if genai_run.rc == 0 else 'Failed to Start' }}
+          
+          Service Endpoints:
+          - Root (/): {{ 'Working' if genai_check_root.status == 200 else 'Not responding' }}
+          - Health (/health): {{ 'Working' if genai_check_health.status == 200 else 'Not responding' }}
+          - Docs (/docs): {{ 'Working' if genai_check_docs.status == 200 else 'Not responding' }}
+          
+          URLs:
+          - API: http://{{ ansible_default_ipv4.address }}:8000
+          - Docs: http://{{ ansible_default_ipv4.address }}:8000/docs
+          - Health: http://{{ ansible_default_ipv4.address }}:8000/health
+          
+          Vector Database:
+          - Local Weaviate: http://{{ ansible_default_ipv4.address }}:8080/v1/meta
           ==========================================
 
-    - name: Show Docker containers status
-      shell: docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-      register: docker_status
+    - name: Show all running containers
+      shell: docker ps --format "table {{ "{{" }}.Names{{ "}}" }}\t{{ "{{" }}.Status{{ "}}" }}\t{{ "{{" }}.Ports{{ "}}" }}"
+      register: all_containers
       become_user: appuser
 
-    - name: Display Docker status
+    - name: Display all containers
       debug:
-        var: docker_status.stdout_lines
-
-    - name: Show logs for troubleshooting (last 20 lines)
-      shell: |
-        echo "=== Docker Compose Logs ==="
-        {% if 'frontend' in group_names %}
-        cd /home/appuser/team-divops/frontend
-        {% elif 'backend' in group_names %}
-        cd /home/appuser/team-divops/backend
-        {% elif 'genai' in group_names %}
-        cd /home/appuser/team-divops/vectordb
-        {% endif %}
-        docker-compose logs --tail=20
-      register: compose_logs
-      become_user: appuser
-      ignore_errors: yes
-
-    - name: Display recent logs
-      debug:
-        var: compose_logs.stdout_lines
-      when: compose_logs.stdout_lines is defined
+        var: all_containers.stdout_lines
