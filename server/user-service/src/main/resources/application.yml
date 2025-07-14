@@ -7,6 +7,8 @@ spring:
     username: userservice
     password: 'Welcome123!'
     driver-class-name: org.postgresql.Driver
+  application:
+    name: user-service
 
   jpa:
     hibernate:

@@ -2,6 +2,7 @@ package com.example.userservice.model;
 
 import jakarta.persistence.*;
 import lombok.Getter;
+import lombok.Setter;
 import org.hibernate.annotations.UuidGenerator;
 
 import java.time.LocalDate;
@@ -27,21 +28,12 @@ public class User {
     @Column(name = "last_name", nullable = false)
     String lastName;
 
-    @Getter
-    @Column(name = "birthdate", nullable = false)
-    LocalDate birthdate;
 
     @Getter
+    @Setter
     @Column(name = "password", nullable = false)
     String password;
 
-    @Getter
-    @Column(name = "role", nullable = false, columnDefinition = "VARCHAR(255) DEFAULT 'USER'")
-    String role = "USER";
-
-    @Getter
-    @Column(name = "enabled", nullable = false, columnDefinition = "BOOLEAN DEFAULT TRUE")
-    boolean enabled = true;
 
     protected User() {
         // no-args constructor required by JPA spec
@@ -52,9 +44,6 @@ public class User {
         this.email = email;
         this.firstName = firstName;
         this.lastName = lastName;
-        this.birthdate = birthdate;
         this.password = password;
-        this.role = role;
-        this.enabled = enabled;
     }
 }

@@ -1,36 +1,25 @@
 package com.example.gateway.config;
 
-import com.example.gateway.security.JwtAuthFilter;
-import com.example.gateway.service.JwtService;
-import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.Customizer;
-import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.web.server.ServerHttpSecurity;
+import org.springframework.security.web.server.SecurityWebFilterChain;
 
 @Configuration
-@EnableWebSecurity
-@RequiredArgsConstructor
 public class SecurityConfig {
-
-    private final JwtService jwt;
-
     @Bean
-    SecurityFilterChain http(HttpSecurity http) throws Exception {
-        return http
-                .csrf(AbstractHttpConfigurer::disable)
-                .authorizeHttpRequests(req -> req
-                        .requestMatchers("/auth/signup",
-                                "/auth/signin",
-                                "/auth/refresh-token").permitAll()
-                        .anyRequest().authenticated())
-                .httpBasic(Customizer.withDefaults())
-                .addFilterBefore(new JwtAuthFilter(jwt),
-                        UsernamePasswordAuthenticationFilter.class)
-                .build();
+    public SecurityWebFilterChain springSecurityFilterChain(ServerHttpSecurity http) {
+        http
+                .csrf(ServerHttpSecurity.CsrfSpec::disable)
+                .authorizeExchange(exchanges -> exchanges
+                        .pathMatchers("/auth/**",
+                                "/users/register",
+                                "/v3/api-docs/**",
+                                "/swagger-ui.html",
+                                "/swagger-ui/**").permitAll()
+                        .anyExchange().authenticated())
+                .httpBasic(Customizer.withDefaults());
+        return http.build();
     }
 }
