@@ -174,3 +174,4 @@ Each service expects the following (see `application.properties` for full list):
 ## API Documentation
 
 - Swagger UI is available at: `http://localhost:8080/swagger-ui/index.html` (when running).
+
